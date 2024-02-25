@@ -1,8 +1,12 @@
 **To run the project**
 ```shell
-docker build -t gemindz-app .
+docker compose build --no-cache
 ```
 ```shell
-docker run -p 5000:5000 gemindz-app
+docker compose up
 ```
 
+
+**TODO**
+- [ ] database diagram
+- [ ] 
