@@ -5,8 +5,6 @@ docker compose build --no-cache
 ```shell
 docker compose up
 ```
+**ERD**
 
-
-**TODO**
-- [ ] database diagram
-- [ ] 
+![erd](erd.png)
