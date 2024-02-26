@@ -1,6 +1,8 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, make_response
 from flask_sqlalchemy import SQLAlchemy
-from datetime import datetime
+import datetime
+import jwt
+from werkzeug.security import generate_password_hash, check_password_hash
 from validators import (
     is_valid_integer,
     is_valid_string,
@@ -11,6 +13,7 @@ from validators import (
 app = Flask(__name__)
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///db.sqlite3"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.config["SECRET_KEY"] = "supersecretkey"
 
 db = SQLAlchemy(app)
 
@@ -19,9 +22,11 @@ class TestCases(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.Text, nullable=False)
     description = db.Column(db.Text)
-    created_at = db.Column(db.TIMESTAMP, default=datetime.utcnow)
+    created_at = db.Column(db.TIMESTAMP, default=datetime.datetime.utcnow)
     updated_at = db.Column(
-        db.TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow
+        db.TIMESTAMP,
+        default=datetime.datetime.utcnow,
+        onupdate=datetime.datetime.utcnow,
     )
 
 
@@ -29,7 +34,83 @@ class ExecutionResults(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     test_case_id = db.Column(db.Integer, db.ForeignKey("test_cases.id"), nullable=False)
     result = db.Column(db.Text, nullable=False)
-    execution_time = db.Column(db.TIMESTAMP, default=datetime.utcnow)
+    execution_time = db.Column(db.TIMESTAMP, default=datetime.datetime.utcnow)
+
+
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password_hash = db.Column(db.String(128), nullable=False)
+
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+
+
+def generate_token(username):
+    return jwt.encode(
+        {
+            "user": username,
+            "exp": datetime.datetime.utcnow() + datetime.timedelta(minutes=30),
+        },
+        app.config["SECRET_KEY"],
+    )
+
+
+def verify_token(token):
+    try:
+        jwt.decode(token, app.config["SECRET_KEY"], algorithms=["HS256"])
+        return True
+    except jwt.ExpiredSignatureError:
+        return False
+    except jwt.InvalidTokenError:
+        return False
+
+
+@app.route("/register", methods=["POST"])
+def register():
+    data = request.get_json()
+
+    username = data.get("username")
+    password = data.get("password")
+
+    if not username or not password:
+        return jsonify({"message": "Username and password are required"}), 400
+
+    if User.query.filter_by(username=username).first():
+        return jsonify({"message": "Username already taken"}), 400
+
+    new_user = User(username=username)
+    new_user.set_password(password)
+
+    db.session.add(new_user)
+    db.session.commit()
+
+    return (
+        jsonify(
+            {
+                "message": "User registered successfully,login to get a token to use it to access the api endpoints"
+            }
+        ),
+        201,
+    )
+
+
+@app.route("/login", methods=["POST"])
+def login():
+    data = request.get_json()
+    username = data.get("username")
+    password = data.get("password")
+
+    user = User.query.filter_by(username=username).first()
+
+    if user and user.check_password(password):
+        token = generate_token(username)
+        return jsonify({"token": token})
+
+    return jsonify({"message": "Invalid credentials"}), 401
 
 
 @app.route("/")
@@ -39,10 +120,18 @@ def hello_world():
 
 @app.route("/api/testcase", methods=["POST"])
 def create_test_case():
+    if "Authorization" not in request.headers:
+        return jsonify({"message": "Authorization header missing"}), 401
+
+    auth_header = request.headers["Authorization"]
+    token = auth_header.split("Bearer ")[-1]
+
+    if not verify_token(token):
+        return jsonify({"message": "Invalid or expired token"}), 401
+
     data = request.get_json()
     if not is_valid_test_case_data(data):
         return jsonify({"error": "Invalid test case data"}), 400
-    # return data
     new_test_case = TestCases(name=data["name"], description=data.get("description"))
     db.session.add(new_test_case)
     db.session.commit()
@@ -60,6 +149,16 @@ def create_test_case():
 
 @app.route("/api/testcase", methods=["GET"])
 def get_all_test_cases():
+
+    if "Authorization" not in request.headers:
+        return jsonify({"message": "Authorization header missing"}), 401
+
+    auth_header = request.headers["Authorization"]
+    token = auth_header.split("Bearer ")[-1]
+
+    if not verify_token(token):
+        return jsonify({"message": "Invalid or expired token"}), 401
+
     test_cases = TestCases.query.all()
     return jsonify(
         [
@@ -99,7 +198,7 @@ def update_test_case(testcase_id):
             data = request.get_json()
             test_case.name = data["name"]
             test_case.description = data.get("description")
-            test_case.updated_at = datetime.utcnow()
+            test_case.updated_at = datetime.datetime.utcnow()
             db.session.commit()
             return jsonify(
                 {
